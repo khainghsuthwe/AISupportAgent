@@ -37,8 +37,9 @@ from bedrock_agentcore.tools.code_interpreter_client import code_session
 from strands_tools.browser import AgentCoreBrowser
 
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("CSAI_Agent")
+logger.setLevel(logging.INFO)
 
 # ── TODO 1 — App Initialisation ───────────────────────────────────────────────
 # Create a BedrockAgentCoreApp instance.
@@ -102,11 +103,16 @@ def get_namespaces(mem_client: MemoryClient, memory_id: str) -> Dict:
     """Return a dict mapping strategy type → namespace template string."""
     try:
         strategies = mem_client.get_memory_strategies(memory_id)
-        return {
-            strategy["type"]: strategy["namespaces"][0]
-            for strategy in strategies
-            if strategy.get("namespaces")
-        }
+        namespaces: Dict[str, str] = {}
+        for strategy in strategies:
+            templates = (
+                strategy.get("namespaceTemplates")
+                or strategy.get("namespaces")
+                or []
+            )
+            if templates:
+                namespaces[strategy["type"]] = templates[0]
+        return namespaces
     except Exception as exc:
         # Fall back to the project namespaces if the runtime role cannot
         # call GetMemory (common in locked-down lab accounts).
@@ -304,8 +310,11 @@ def search_knowledge_base(query: str) -> str:
     Returns:
         Relevant information retrieved from the knowledge base
     """
-    if not KB_ID or KB_ID.startswith("<"):
-        return "Knowledge base not configured."
+    if not KB_ID or not KB_ID.strip() or KB_ID.startswith("<"):
+        return (
+            "Knowledge Base is not configured: KB_ID is empty or missing. "
+            "Please configure KB_ID before attempting a knowledge-base search."
+        )
 
     try:
         resp = _bedrock_runtime.retrieve(
@@ -509,10 +518,27 @@ async def invoke(payload, context=None):
             agent_core_browser.browser,
         ]
 
-        mcp_client = MCPClient(lambda: streamable_http_client(GATEWAY_URL))
-        with mcp_client:
-            gateway_tools = mcp_client.list_tools_sync()
-            tools.extend(gateway_tools)
+        gateway_client = MCPClient(lambda: streamable_http_client(GATEWAY_URL))
+        with gateway_client:
+            try:
+                gateway_tools = gateway_client.list_tools_sync()
+                tools.extend(gateway_tools)
+
+                logger.info(
+                    "Gateway connected successfully. Loaded %d tools.",
+                    len(gateway_tools),
+                )
+
+            except TimeoutError:
+                logger.exception("Gateway tool loading timed out")
+
+            except ConnectionError:
+                logger.exception("Gateway connection failed")
+
+            except Exception as exc:
+                logger.exception(
+                    "Gateway tool loading failed: %s", exc
+                )
 
             agent = Agent(
                 model=model,
@@ -532,7 +558,10 @@ async def invoke(payload, context=None):
 
     except Exception as exc:
         logger.exception("Agent invocation failed")
-        return f"Sorry, I ran into an error while handling your request: {exc}"
+        return (
+            "Sorry, I could not complete that request due to a temporary "
+            f"service issue. Please try again in a moment. ({type(exc).__name__})"
+        )
 
 
 # ── CLI entry point (do not modify) ──────────────────────────────────────────
