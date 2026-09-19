@@ -1,0 +1,11 @@
+.DS_Store
+.aws-local/
+.venv/
+starter/.venv/
+**/__pycache__/
+**/*.pyc
+starter/html_shots/
+starter/test_outputs/
+starter/.bedrock_agentcore/
+.cursor/
+CODEOWNERS
